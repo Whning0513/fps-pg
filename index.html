@@ -431,7 +431,7 @@
 
     function selectWeapon(slot) {
       if (!weaponModels.has(slot)) return;
-      selectedWeapon = slot;
+      selectedWeapon = slot; triggerDown = false; nextAttackAt = 0;
       for (const [index, model] of weaponModels) model.visible = index === slot;
       weaponSlots.forEach((element) => element.classList.toggle('active', Number(element.dataset.slot) === slot));
     }
