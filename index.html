@@ -27,6 +27,11 @@
     .start:hover{transform:translateY(-2px);background:#f0bd79}
     .start:disabled{opacity:.45;cursor:wait;transform:none}
     .start-note{color:#aeb6b2;font-size:11px;letter-spacing:.06em;line-height:1.6}
+    .sensitivity-control{display:block;width:min(280px,78vw);margin-top:20px;color:#c5c8bf}
+    .sensitivity-control span{display:flex;justify-content:space-between;font-size:10px;letter-spacing:.12em}
+    .sensitivity-control output{color:var(--amber);font-variant-numeric:tabular-nums}
+    .sensitivity-control input{display:block;width:100%;margin:9px 0 0;accent-color:var(--amber)}
+    .sensitivity-control small{display:block;margin-top:5px;color:#8c9691;font-size:9px;letter-spacing:.04em}
     .edition{position:fixed;right:7vw;bottom:8vh;color:#bdc4bc;text-align:right;font-size:10px;letter-spacing:.2em;line-height:2;opacity:.72}
     .edition strong{display:block;color:var(--amber);font-weight:500}
     .hud{position:fixed;inset:0;z-index:4;pointer-events:none;opacity:0;transition:opacity .45s}
@@ -100,6 +105,11 @@
         <button class="start" id="start" disabled>开始巡检</button>
         <div class="start-note">W A S D 移动 · 鼠标观察 · E 检查设备<br>Esc 释放鼠标</div>
       </div>
+      <label class="sensitivity-control" for="look-sensitivity">
+        <span>鼠标灵敏度 <output id="sensitivity-value">1.00×</output></span>
+        <input id="look-sensitivity" type="range" min="0.5" max="2" step="0.05" value="1">
+        <small>线性调节 · 0.5×–2.0×</small>
+      </label>
     </div>
     <div class="edition"><strong>NIGHT SHIFT / 08</strong>CREATIVE OFFICE DISTRICT<br>THREE NETWORK NODES</div>
   </section>
@@ -116,7 +126,7 @@
     </div>
     <div class="reticle"></div>
     <div class="prompt" id="prompt"><b>E</b><span>检查设备</span></div>
-    <div class="help"><span>W A S D</span>MOVE &nbsp; <span>E</span>INTERACT &nbsp; <span>SHIFT</span>HURRY<br><span>1 / 2 / 3</span>EQUIPMENT &nbsp; · &nbsp; CLICK TO RECAPTURE MOUSE</div>
+    <div class="help"><span>W A S D</span>MOVE &nbsp; <span>E</span>INTERACT &nbsp; <span>SHIFT</span>HURRY<br><span>1 / 2 / 3</span>EQUIPMENT &nbsp; · &nbsp; <span>LMB</span>FIRE / SLASH<br>CLICK TO RECAPTURE MOUSE</div>
     <div class="loadout" id="loadout" aria-label="Equipment">
       <div class="weapon-slot active" data-slot="1"><kbd>1</kbd><span>RIFLE</span></div>
       <div class="weapon-slot" data-slot="2"><kbd>2</kbd><span>PISTOL</span></div>
@@ -158,6 +168,8 @@
     const panelFoot = $('#panel-foot');
     const freqList = $('#freq-list');
     const weaponSlots = [...document.querySelectorAll('.weapon-slot')];
+    const lookSensitivityInput = $('#look-sensitivity');
+    const sensitivityValue = $('#sensitivity-value');
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.65));
@@ -170,6 +182,12 @@
     sceneRoot.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
+    const tracer = new THREE.Line(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: 0xffc16e, transparent: true, opacity: 0.82, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    tracer.visible = false;
+    scene.add(tracer);
     scene.fog = new THREE.FogExp2(0x667579, 0.0085);
     const camera = new THREE.PerspectiveCamera(67, window.innerWidth / window.innerHeight, 0.1, 500);
     camera.rotation.order = 'YXZ';
@@ -178,6 +196,7 @@
     viewModelRoot.visible = false;
     camera.add(viewModelRoot);
     const weaponModels = new Map();
+    const muzzleEffects = new Map();
     const viewModelLight = new THREE.PointLight(0xc6d9d3, 1.5, 3.2, 2);
     viewModelLight.position.set(0.35, 0.45, -0.15);
     viewModelRoot.add(viewModelLight);
@@ -210,6 +229,12 @@
     let focusTarget = null;
     let yaw = 0;
     let pitch = -0.025;
+    let sensitivityMultiplier = Number(lookSensitivityInput.value);
+    let selectedWeapon = 1;
+    let triggerDown = false;
+    let nextAttackAt = 0;
+    let recoilPitch = 0;
+    let tracerUntil = 0;
     let toastTimer = 0;
     let audioContext = null;
     const player = new THREE.Vector3(0, 1.7, 18.4);
@@ -275,6 +300,16 @@
       return mesh;
     }
 
+    function addMuzzleFlash(group, position) {
+      const flash = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 6), new THREE.MeshBasicMaterial({
+        color: 0xffd28a, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
+      }));
+      flash.position.set(...position); flash.scale.set(0.75, 0.75, 2.2); flash.visible = false; group.add(flash);
+      const light = new THREE.PointLight(0xffa850, 0, 2.8, 2);
+      light.position.set(...position); group.add(light);
+      return { flash, light, until: 0 };
+    }
+
     function addGlovedHand(group, position, sleeveMaterial, gloveMaterial, thumbSide = 1) {
       const hand = new THREE.Group(); hand.position.set(...position); group.add(hand);
       addVMBox(hand, [0.17, 0.16, 0.34], sleeveMaterial, [0, 0, 0.2]);
@@ -320,6 +355,7 @@
       addVMBox(group, [0.045, 0.11, 0.035], rail, [0, 0.22, 0.12]);
       addGlovedHand(group, [-0.11, -0.27, -0.67], sleeve, glove, -1);
       addGlovedHand(group, [0.15, -0.28, 0.13], sleeve, glove, 1);
+      muzzleEffects.set(1, addMuzzleFlash(group, [0, 0.035, -1.91]));
       return group;
     }
 
@@ -347,6 +383,7 @@
       addVMBox(group, [0.035, 0.035, 0.23], sights, [0, -0.23, -0.02]);
       addVMBox(group, [0.035, 0.14, 0.035], sights, [0, -0.16, 0.09]);
       addGlovedHand(group, [0.12, -0.29, 0.18], sleeve, glove, 1);
+      muzzleEffects.set(2, addMuzzleFlash(group, [0, 0.095, -0.57]));
       return group;
     }
 
@@ -382,6 +419,10 @@
       weaponModels.set(2, makePistolViewModel());
       weaponModels.set(3, makeM9KnifeViewModel());
       for (const [slot, model] of weaponModels) {
+        model.userData.basePosition = model.position.clone();
+        model.userData.baseRotation = model.rotation.clone();
+        model.userData.kick = 0;
+        model.userData.swing = 0;
         model.visible = slot === 1;
         viewModelRoot.add(model);
       }
@@ -390,6 +431,7 @@
 
     function selectWeapon(slot) {
       if (!weaponModels.has(slot)) return;
+      selectedWeapon = slot;
       for (const [index, model] of weaponModels) model.visible = index === slot;
       weaponSlots.forEach((element) => element.classList.toggle('active', Number(element.dataset.slot) === slot));
     }
@@ -892,8 +934,75 @@
       } catch (_) {}
     }
 
+    function gunshotSound() {
+      try {
+        audioContext ??= new AudioContext();
+        if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+        const now = audioContext.currentTime;
+        const samples = Math.floor(audioContext.sampleRate * 0.075);
+        const buffer = audioContext.createBuffer(1, samples, audioContext.sampleRate);
+        const channel = buffer.getChannelData(0);
+        for (let i = 0; i < samples; i++) channel[i] = (Math.random() * 2 - 1) * (1 - i / samples) ** 3;
+        const noise = audioContext.createBufferSource();
+        const filter = audioContext.createBiquadFilter();
+        const noiseGain = audioContext.createGain();
+        noise.buffer = buffer; filter.type = 'lowpass'; filter.frequency.value = selectedWeapon === 1 ? 1800 : 2400;
+        noiseGain.gain.setValueAtTime(0.14, now); noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+        noise.connect(filter).connect(noiseGain).connect(audioContext.destination); noise.start(now);
+
+        const thump = audioContext.createOscillator();
+        const thumpGain = audioContext.createGain();
+        thump.type = 'sine'; thump.frequency.setValueAtTime(105, now); thump.frequency.exponentialRampToValueAtTime(48, now + 0.065);
+        thumpGain.gain.setValueAtTime(0.1, now); thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+        thump.connect(thumpGain).connect(audioContext.destination); thump.start(now); thump.stop(now + 0.08);
+      } catch (_) {}
+    }
+
+    function attackWeapon(now = performance.now()) {
+      if (!started || !locked || panelOpen || gameDone || now < nextAttackAt) return;
+      const model = weaponModels.get(selectedWeapon);
+      nextAttackAt = now + (selectedWeapon === 1 ? 105 : selectedWeapon === 2 ? 220 : 420);
+      if (selectedWeapon === 3) {
+        model.userData.swing = Math.min(model.userData.swing + 1.15, 1.35);
+        return;
+      }
+
+      model.userData.kick = Math.min(model.userData.kick + (selectedWeapon === 1 ? 0.105 : 0.08), 0.18);
+      recoilPitch = Math.min(recoilPitch + (selectedWeapon === 1 ? 0.018 : 0.034), 0.14);
+      const effect = muzzleEffects.get(selectedWeapon);
+      if (effect) {
+        effect.until = now + 70; effect.light.intensity = 5.5; effect.flash.visible = true;
+        const start = effect.flash.getWorldPosition(new THREE.Vector3());
+        const end = start.clone().addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 38);
+        tracer.geometry.setFromPoints([start, end]); tracer.geometry.computeBoundingSphere();
+        tracer.visible = true; tracerUntil = now + 48;
+      }
+      gunshotSound();
+    }
+
+    function updateWeaponEffects(dt, now) {
+      recoilPitch *= Math.exp(-16 * dt);
+      for (const model of weaponModels.values()) {
+        const kick = model.userData;
+        kick.kick *= Math.exp(-24 * dt); kick.swing *= Math.exp(-13 * dt);
+        model.position.copy(kick.basePosition);
+        model.position.z += kick.kick;
+        model.position.x -= kick.swing * 0.13;
+        model.rotation.copy(kick.baseRotation);
+        model.rotation.x += kick.swing * 0.12;
+        model.rotation.z += kick.swing * 0.52;
+      }
+      for (const effect of muzzleEffects.values()) {
+        const visible = now < effect.until;
+        effect.flash.visible = visible; effect.light.intensity = visible ? 5.5 : 0;
+      }
+      if (now >= tracerUntil) tracer.visible = false;
+      if (started) camera.rotation.set(THREE.MathUtils.clamp(pitch + recoilPitch, -1.15, 1.15), yaw, 0, 'YXZ');
+    }
+
     function openPanel(target) {
       panelTarget = target; panelOpen = true; prompt.classList.remove('show');
+      triggerDown = false;
       viewModelRoot.visible = false;
       if (document.pointerLockElement) document.exitPointerLock();
       freqList.innerHTML = '';
@@ -1050,6 +1159,8 @@
         camera.position.set(Math.sin(a) * 22, 17.0 + Math.sin(time * 0.11) * 0.45, 32 + Math.cos(a) * 5);
         camera.lookAt(0, 12.0, -42);
       } else updatePlayer(dt);
+      if (triggerDown && selectedWeapon === 1) attackWeapon(performance.now());
+      updateWeaponEffects(dt, performance.now());
       updateAtmosphere(dt, time);
       focusTarget = getFocusTarget();
       if (focusTarget) {
@@ -1092,18 +1203,31 @@
       if (startButton.disabled) return;
       started = true; intro.classList.add('hide'); hud.classList.add('on');
       viewModelRoot.visible = true; selectWeapon(1);
-      player.set(0, 1.7, 18.4); yaw = 0; pitch = -0.025; makePlayerView();
+      player.set(0, 1.7, 18.4); yaw = 0; pitch = -0.025; recoilPitch = 0; makePlayerView();
       renderer.domElement.requestPointerLock?.();
       audioContext ??= new AudioContext(); tone(294, 0.12);
     });
     $('#return-title').addEventListener('click', () => location.reload());
     $('#scene').addEventListener('click', () => { if (started && !panelOpen && !gameDone) renderer.domElement.requestPointerLock?.(); });
-    document.addEventListener('pointerlockchange', () => { locked = document.pointerLockElement === renderer.domElement; });
+    document.addEventListener('pointerlockchange', () => {
+      locked = document.pointerLockElement === renderer.domElement;
+      if (!locked) triggerDown = false;
+    });
     document.addEventListener('mousemove', (event) => {
       if (!locked || panelOpen) return;
-      yaw -= event.movementX * 0.0021;
-      pitch = THREE.MathUtils.clamp(pitch - event.movementY * 0.0017, -1.15, 1.15);
-      camera.rotation.set(pitch, yaw, 0, 'YXZ');
+      const radiansPerPixel = 0.0021 * sensitivityMultiplier;
+      yaw -= event.movementX * radiansPerPixel;
+      pitch = THREE.MathUtils.clamp(pitch - event.movementY * radiansPerPixel, -1.15, 1.15);
+      camera.rotation.set(THREE.MathUtils.clamp(pitch + recoilPitch, -1.15, 1.15), yaw, 0, 'YXZ');
+    });
+    document.addEventListener('mousedown', (event) => {
+      if (event.button !== 0 || !started || !locked || panelOpen || gameDone) return;
+      event.preventDefault(); triggerDown = true; attackWeapon();
+    });
+    document.addEventListener('mouseup', (event) => { if (event.button === 0) triggerDown = false; });
+    lookSensitivityInput.addEventListener('input', () => {
+      sensitivityMultiplier = Number(lookSensitivityInput.value);
+      sensitivityValue.textContent = `${sensitivityMultiplier.toFixed(2)}×`;
     });
     document.addEventListener('keydown', (event) => {
       if (['KeyW','KeyA','KeyS','KeyD','ShiftLeft','ShiftRight'].includes(event.code)) { moveKeys.add(event.code); event.preventDefault(); }
@@ -1116,7 +1240,7 @@
       if (event.code === 'Escape' && panelOpen) { event.preventDefault(); closePanel(); }
     });
     document.addEventListener('keyup', (event) => moveKeys.delete(event.code));
-    window.addEventListener('blur', () => moveKeys.clear());
+    window.addEventListener('blur', () => { moveKeys.clear(); triggerDown = false; });
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight);
