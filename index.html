@@ -80,6 +80,7 @@
     #loading{position:fixed;z-index:20;inset:0;display:grid;place-items:center;background:#0b1115;color:#c4c8be;font-size:11px;letter-spacing:.18em;transition:opacity .5s}
     #loading.done{opacity:0;pointer-events:none}
     #loading b{display:block;color:var(--amber);font-weight:400;margin-bottom:10px}
+    .load-error-detail{display:block;max-width:min(80vw,720px);margin:12px auto 0;color:var(--red);font-size:12px;letter-spacing:0;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}
     @media(max-width:680px){.intro{padding:7vh 8vw}.edition{display:none}.hud-top{left:16px;right:16px;top:16px}.objective{left:16px;top:88px;width:210px}.help{left:16px;bottom:14px}.loadout{right:12px;bottom:64px;gap:4px;flex-direction:column;align-items:stretch}.weapon-slot{padding:6px 8px}.panel{right:4vw}.intro-desc{font-size:13px}h1{font-size:68px}}
   </style>
   <script type="importmap">
@@ -741,7 +742,8 @@
       envMap.mapping = THREE.EquirectangularReflectionMapping;
       envMap.colorSpace = THREE.LinearSRGBColorSpace;
       envMap.anisotropy = 4;
-      envMap.rotation.y = -0.48;
+      scene.backgroundRotation.y = -0.48;
+      scene.environmentRotation.y = -0.48;
       envMap.needsUpdate = true;
       scene.background = envMap;
       scene.environment = envMap;
@@ -1078,7 +1080,11 @@
         frame();
       } catch (error) {
         console.error(error);
-        $('#loading').innerHTML = '<div><b>场景载入失败</b>请用 run.ps1 启动本地服务，并检查 Three.js CDN 或素材文件是否可访问。</div>';
+        loading.innerHTML = '<div><b>场景载入失败</b>请查看浏览器控制台，或读取下方错误详情。</div>';
+        const detail = document.createElement('code');
+        detail.className = 'load-error-detail';
+        detail.textContent = error instanceof Error ? error.message : String(error);
+        loading.firstElementChild.append(detail);
       }
     }
 
